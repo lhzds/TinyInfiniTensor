@@ -1,5 +1,7 @@
 #include "core/graph.h"
+#include "core/runtime.h"
 #include <algorithm>
+#include <memory>
 #include <numeric>
 #include <queue>
 
@@ -152,6 +154,11 @@ namespace infini
         // TODO：利用 allocator 给计算图分配内存
         // HINT: 获取分配好的内存指针后，可以调用 tensor 的 setDataBlob 函数给 tensor 绑定内存
         // =================================== 作业 ===================================
+        for (auto &tensor : tensors) {
+            void *ptr = static_cast<std::byte *>(allocator.getPtr()) + allocator.alloc(tensor->size());
+            Blob blob = std::make_shared<BlobObj>(runtime, ptr);
+            tensor->setDataBlob(blob);
+        }
 
         allocator.info();
     }
