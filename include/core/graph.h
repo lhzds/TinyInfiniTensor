@@ -1,6 +1,7 @@
 #pragma once
 #include "core/allocator.h"
 #include "core/operator.h"
+#include "core/runtime.h"
 #include "core/tensor.h"
 
 namespace infini
@@ -105,6 +106,10 @@ namespace infini
         bool checkValid() const;
 
     private:
+        void reconnect(const Tensor &old_input_tensors, const Tensor &new_input_tensors,
+            const Operator &op);
+        void eraseNullOpAndTensor(const Operator &op) ;
+
         /**
          * @brief Add reverse connections and Op relationship in ctor.
          */

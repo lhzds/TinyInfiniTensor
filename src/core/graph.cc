@@ -1,5 +1,9 @@
 #include "core/graph.h"
+#include "core/common.h"
+#include "core/op_type.h"
 #include "core/runtime.h"
+#include "operators/matmul.h"
+#include "operators/transpose.h"
 #include <algorithm>
 #include <memory>
 #include <numeric>
@@ -7,6 +11,64 @@
 
 namespace infini
 {
+    void GraphObj::reconnect(const Tensor &old_input_tensor, const Tensor &new_input_tensor, 
+        const Operator &op) {
+        if (old_input_tensor == new_input_tensor) {
+            return;
+        }
+
+        op->replaceInput(old_input_tensor, new_input_tensor); // 替换每一处位置
+        old_input_tensor->removeTarget(op);
+        new_input_tensor->addTarget(op); // 添加不用有重复也无所谓，删除时会删除所有重复
+
+        // 是否还存在与原节点其他 tensor 相连接，如果没有才删除与节点的关联
+        auto old_is_pred = [&] {
+            for (auto &&input : op->getInputs()) {
+                if (input->getSource() == old_input_tensor->getSource()) {
+                    return true;
+                }
+            }
+            return false;
+        }();
+        if (not old_is_pred) {
+            old_input_tensor->getSource()->removeSuccessors(op);
+            op->removePredecessors(old_input_tensor->getSource());
+        }
+
+        // 添加不用有重复也无所谓，删除时会删除所有重复
+        if (new_input_tensor->getSource()) {
+            new_input_tensor->getSource()->addSuccessors(op);
+            op->addPredecessors(new_input_tensor->getSource());
+        }
+    }
+
+    void GraphObj::eraseNullOpAndTensor(const Operator &op) {
+        // 默认 op 输出的 Tensor 不包含 output tensor
+
+        // 确保没有后继
+        if (not op->getSuccessors().empty()) {
+            return;
+        }
+
+        // 从前驱中删除后继关系
+        for (auto &&input : op->getInputs()) {
+            input->removeTarget(op);
+        }
+        for (auto &&pred : op->getPredecessors()) {
+            pred->removeSuccessors(op);
+        }
+
+        // 删除节点
+        for (auto &&output : op->getOutputs()) {
+            removeTensor(output);
+        }
+        removeOperator(op);
+
+        // 递归删除其他节点
+        for (auto &&pred : op->getPredecessors()) {
+            eraseNullOpAndTensor(pred);
+        }
+    }
 
     void GraphObj::addOperatorAndConnect(const Operator &op)
     {
@@ -108,6 +170,64 @@ namespace infini
         // 1. 去除冗余的算子（例如，两个相邻的算子都是 transpose 算子，且做的是相反的操作，可以将其全部删除）
         // 2. 合并算子（例如，矩阵乘算子中含有属性transA、transB，如果其输入存在transpose，且对最后两个维度做交换，就可以将transpose融入到矩阵乘算子的属性中去）
         // =================================== 作业 ===================================
+        std::set<Operator> deleted_ops;
+
+        for (auto &op : ops) {
+            if (deleted_ops.find(op) != std::end(deleted_ops)) {
+                continue;
+            }
+            if (op->getOpType() != OpType::Transpose) {
+                continue;
+            }
+
+            auto op_perm = std::static_pointer_cast<TransposeObj>(op)->getPermute();
+            for (auto &&succ : op->getSuccessors()) {
+                if (succ->getOpType() == OpType::Transpose) {
+                    auto succ_perm = std::static_pointer_cast<TransposeObj>(succ)->getPermute();
+                    if (not (succ_perm == op_perm)) {
+                        continue;
+                    }
+                    
+                    for (auto &&succ_succ : succ->getSuccessors()) {
+                        reconnect(succ->getOutput(), op->getInputs()[0], succ_succ);
+                    }
+
+                    deleted_ops.emplace(op);
+                    deleted_ops.emplace(succ);
+                } else if (succ->getOpType() == OpType::MatMul) {
+                    int op_input_rank = op->getInputs()[0]->getRank();
+                    bool is_fusable = [&]() {
+                        if (op_perm.back() != op_input_rank - 2 || op_perm[op_perm.size() - 2] != op_input_rank - 1) {
+                            return false;
+                        }
+                        for (int i{}; i < op_input_rank - 2; ++i) {
+                            if (i != op_perm[i]) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    }();
+                    if (not is_fusable) {
+                        continue;
+                    }
+
+                    auto matmul_succ = std::static_pointer_cast<MatmulObj>(succ);
+                    if (op == succ->getInputs()[1]->getSource()) {
+                        matmul_succ->setTransB(not matmul_succ->getTransB());
+                    }
+                    
+                    if (op == succ->getInputs()[0]->getSource()) {
+                        matmul_succ->setTransA(not matmul_succ->getTransA());
+                    }
+                    reconnect(op->getOutput(), op->getInputs()[0], succ);
+
+                    deleted_ops.emplace(op);
+                }
+            }
+        }
+        for (auto &&op : deleted_ops) {
+            eraseNullOpAndTensor(op);
+        }
     }
 
     Tensor GraphObj::getTensor(int fuid) const
@@ -154,9 +274,16 @@ namespace infini
         // TODO：利用 allocator 给计算图分配内存
         // HINT: 获取分配好的内存指针后，可以调用 tensor 的 setDataBlob 函数给 tensor 绑定内存
         // =================================== 作业 ===================================
+        std::vector<size_t> offsets;
+        offsets.reserve(offsets.size());
+
         for (auto &tensor : tensors) {
-            void *ptr = static_cast<std::byte *>(allocator.getPtr()) + allocator.alloc(tensor->size());
-            Blob blob = std::make_shared<BlobObj>(runtime, ptr);
+            offsets.emplace_back(allocator.alloc(tensor->getBytes()));
+        }
+        void *mem = allocator.getPtr();
+        for (size_t i{}; i < tensors.size(); ++i) {
+            auto &tensor = tensors[i];
+            Blob blob = std::make_shared<BlobObj>(runtime, static_cast<std::byte *>(mem) + offsets[i]);
             tensor->setDataBlob(blob);
         }
 

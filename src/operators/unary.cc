@@ -1,4 +1,5 @@
 #include "operators/unary.h"
+#include "core/data_type.h"
 
 namespace infini
 {
@@ -39,7 +40,11 @@ namespace infini
         // TODO：返回经过 clip 操作后的 shape
         // REF: https://onnx.ai/onnx/operators/onnx__Clip.html#clip-13
         // =================================== 作业 ===================================
-        return std::nullopt;
+        vector<Shape> output_dims(inputs.size());
+        for (size_t i{}; i < inputs.size(); ++i) {
+            output_dims[i] = inputs[i]->getDims();
+        }
+        return output_dims;
     }
 
     std::string ClipObj::toString() const
@@ -66,6 +71,40 @@ namespace infini
         // REF_FILE: src/core/operator.cc
         // REF: https://onnx.ai/onnx/operators/onnx__Cast.html#cast-21
         // =================================== 作业 ===================================
+        switch (castType) {
+            case CastType::Float2Float16:
+            case CastType::Float2BFloat16:
+                return vector<DataType>(inputs.size(), DataType::Float16);
+            case CastType::Float2Int64:
+            case CastType::Int322Int64:
+            case CastType::Uint322Int64:
+            case CastType::Uint82Int64:
+                return vector<DataType>(inputs.size(), DataType::Int64);
+            case CastType::Int322Float:
+            case CastType::Int642Float:
+            case CastType::Float162Float:
+            case CastType::BFloat162Float:
+            case CastType::Float2Float:
+            case CastType::Int82Float:
+            case CastType::Uint82Float:
+            case CastType::Int162Float:
+                return vector<DataType>(inputs.size(), DataType::Float32);
+            case CastType::Float2Int32:
+            case CastType::Int162Int32:
+            case CastType::Int82Int32:
+            case CastType::Uint82Int32:
+            case CastType::Int642Int32:
+                return vector<DataType>(inputs.size(), DataType::Int32);
+            case CastType::Float2Int8:
+            case CastType::Int322Int8:
+                return vector<DataType>(inputs.size(), DataType::Int8);
+            case CastType::Int322Int16:
+            case CastType::Int82Int16:
+            case CastType::Float2Int16:
+                return vector<DataType>(inputs.size(), DataType::Int16);
+            case CastType::Int642Uint32:
+                return vector<DataType>(inputs.size(), DataType::UInt32);
+        }
         return {};
     }
 
@@ -75,7 +114,11 @@ namespace infini
         // TODO：返回经过 cast 操作后的 shape
         // REF: https://onnx.ai/onnx/operators/onnx__Cast.html#cast-21
         // =================================== 作业 ===================================
-        return std::nullopt;
+        vector<Shape> output_dims(inputs.size());
+        for (size_t i{}; i < inputs.size(); ++i) {
+            output_dims[i] = inputs[i]->getDims();
+        }
+        return output_dims;
     }
 
     std::string CastObj::toString() const
